@@ -1,5 +1,6 @@
 import streamlit as st
 
+from app.gemini_service import generate_quiz
 from app.mock_quiz import create_mock_quiz
 from app.quiz_scoring import score_quiz
 
@@ -17,20 +18,51 @@ def reset_quiz():
 def show_setup():
     st.subheader("1. Przygotuj quiz")
     with st.form("setup_form"):
+        modes = ("Gemini AI", "Demo")
+        mode = st.radio(
+            "Tryb quizu",
+            options=modes,
+            index=modes.index(st.session_state.get("generation_mode", "Gemini AI")),
+            key="setup_mode",
+            horizontal=True,
+        )
         source_text = st.text_area(
             "Materiał do nauki",
             value=st.session_state.get("source_text", ""),
             height=220,
             placeholder="Wklej notatki lub fragment materiału edukacyjnego…",
-            help="W wersji demonstracyjnej materiał jest opcjonalny i nie wpływa na pytania.",
+            help="Gemini AI wymaga materiału źródłowego. W trybie Demo tekst jest opcjonalny.",
+            key="setup_source_text",
         )
-        num_questions = st.selectbox("Liczba pytań", options=range(1, 11), index=4)
+        num_questions = st.selectbox(
+            "Liczba pytań",
+            options=range(1, 11),
+            index=st.session_state.get("num_questions", 5) - 1,
+            key="setup_num_questions",
+        )
         submitted = st.form_submit_button("Rozpocznij quiz", type="primary")
 
     if submitted:
-        st.session_state.source_text = source_text.strip()
-        # Future integration: generate_quiz(source_text, num_questions).
-        st.session_state.quiz = create_mock_quiz(num_questions)
+        st.session_state.source_text = source_text
+        st.session_state.generation_mode = mode
+        st.session_state.num_questions = num_questions
+        if mode == "Gemini AI":
+            if not source_text.strip():
+                st.error("W trybie Gemini AI wprowadź niepusty materiał źródłowy.")
+                return
+            try:
+                with st.spinner("Gemini AI przygotowuje pytania…"):
+                    quiz = generate_quiz(source_text.strip(), num_questions)
+            except Exception:
+                st.error(
+                    "Nie udało się wygenerować quizu. Spróbuj ponownie lub wybierz Demo. "
+                    "Jeśli problem się powtarza, sprawdź połączenie i konfigurację Gemini."
+                )
+                return
+        else:
+            quiz = create_mock_quiz(num_questions)
+
+        st.session_state.quiz = quiz
         st.session_state.answers = {}
         st.session_state.results = None
         st.session_state.stage = "quiz"
@@ -98,8 +130,8 @@ def main():
 
     st.title("AI Test Creator")
     st.info(
-        "Wersja demonstracyjna korzysta z przykładowych pytań, a nie z Gemini API. "
-        "Wpisany materiał nie wpływa jeszcze na treść quizu."
+        "Gemini AI tworzy pytania na podstawie Twojego materiału. "
+        "Tryb Demo korzysta z gotowych pytań niezależnych od wpisanego tekstu."
     )
     if st.session_state.stage == "setup":
         show_setup()
