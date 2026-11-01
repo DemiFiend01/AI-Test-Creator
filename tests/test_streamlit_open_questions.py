@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
+from app.grading_schemas import OpenAnswerGrade, OpenGradingResult
 from app.mock_quiz import create_mock_quiz
 from app.quiz_scoring import score_quiz
 from app.schemas import OpenQuestion, OpenQuiz, Quiz
@@ -41,6 +42,18 @@ class OpenQuizStreamlitTests(unittest.TestCase):
         self.open_pdf = self.patch_generator("generate_open_quiz_from_pdf", example_open_quiz())
         self.closed_text = self.patch_generator("generate_quiz", create_mock_quiz(1))
         self.closed_pdf = self.patch_generator("generate_quiz_from_pdf", create_mock_quiz(1))
+        # Fixed UI test responses, not an assessment of answer correctness.
+        grading = patch("app.grading_service.grade_open_answers", side_effect=lambda questions, answers: (
+            OpenGradingResult(grades=[
+                OpenAnswerGrade(
+                    question_id=question.id,
+                    points=1.0 if answers.get(question.id, "").strip() else 0.0,
+                    feedback=f"MOCK_FEEDBACK_{question.id}",
+                ) for question in questions
+            ])
+        ))
+        self.grading = grading.start()
+        self.addCleanup(grading.stop)
         scoring = patch("app.quiz_scoring.score_quiz", wraps=score_quiz)
         self.scoring = scoring.start()
         self.addCleanup(scoring.stop)
@@ -99,6 +112,7 @@ class OpenQuizStreamlitTests(unittest.TestCase):
             self.assertNotIn(question.reference_answer, self.rendered_text())
             self.assertNotIn(question.explanation, self.rendered_text())
         self.scoring.assert_not_called()
+        self.grading.assert_not_called()
 
     def test_answers_survive_widget_and_manual_reruns_without_generating(self):
         self.submit_open_text()
@@ -111,8 +125,9 @@ class OpenQuizStreamlitTests(unittest.TestCase):
         self.open_text.assert_called_once_with("Materiał źródłowy", 2)
         self.open_pdf.assert_not_called()
         self.scoring.assert_not_called()
+        self.grading.assert_not_called()
 
-    def test_submission_displays_responses_and_reference_answers_without_grading(self):
+    def test_submission_displays_responses_grades_and_reference_answers(self):
         self.submit_open_text()
         self.app.text_area(key="open_quiz_answer_1").input("Moja odpowiedź").run()
         self.app.button[0].click().run()
@@ -124,11 +139,13 @@ class OpenQuizStreamlitTests(unittest.TestCase):
         for question in self.open_text.return_value.questions:
             self.assertIn(question.reference_answer, rendered)
             self.assertIn(question.explanation, rendered)
-        self.assertIn("Automatyczne ocenianie pytań otwartych nie jest jeszcze dostępne", rendered)
-        self.assertEqual(len(self.app.metric), 0)
-        self.assertIsNone(self.app.session_state["results"])
+        self.assertIn("oceniane z pomocą AI", rendered)
+        self.assertIn("MOCK_FEEDBACK_1", rendered)
+        self.assertEqual([metric.value for metric in self.app.metric], ["1 / 2", "50%"])
+        self.assertIsInstance(self.app.session_state["results"]["open_grades"], OpenGradingResult)
         self.scoring.assert_not_called()
         self.app.run()
+        self.grading.assert_called_once()
         self.open_text.assert_called_once_with("Materiał źródłowy", 2)
         self.open_pdf.assert_not_called()
 
@@ -138,7 +155,7 @@ class OpenQuizStreamlitTests(unittest.TestCase):
         self.assertFalse(self.app.exception)
         self.assertEqual(self.app.session_state["stage"], "results")
         self.assertEqual(self.app.session_state["answers"], {1: "", 2: ""})
-        self.assertEqual(len(self.app.metric), 0)
+        self.assertEqual([metric.value for metric in self.app.metric], ["0 / 2", "0%"])
         self.scoring.assert_not_called()
         self.open_text.assert_called_once()
 
@@ -243,7 +260,8 @@ class OpenQuizStreamlitTests(unittest.TestCase):
         self.app.button[0].click().run()
         self.assertFalse(self.app.exception)
         self.assertIn("REFERENCE_ONLY_1", self.rendered_text())
-        self.assertEqual(len(self.app.metric), 0)
+        self.assertEqual([metric.value for metric in self.app.metric], ["1 / 2", "50%"])
+        self.grading.assert_called_once()
         self.open_text.assert_not_called()
         self.open_pdf.assert_not_called()
         self.scoring.assert_not_called()
@@ -264,8 +282,10 @@ class OpenQuizStreamlitTests(unittest.TestCase):
         self.app.button[0].click().run()
         self.assertFalse(self.app.exception)
         self.assertEqual(self.app.session_state["results"]["closed"]["total"], 1)
-        self.assertEqual(len(self.app.metric), 1)
+        self.assertEqual(len(self.app.metric), 4)
         self.assertEqual(self.app.metric[0].label, "Wynik części zamkniętej")
+        self.assertEqual(self.app.metric[2].value, "0 / 2")
+        self.grading.assert_called_once()
         self.assertIn("REFERENCE_ONLY_2", self.rendered_text())
         self.open_text.assert_not_called()
         self.open_pdf.assert_not_called()

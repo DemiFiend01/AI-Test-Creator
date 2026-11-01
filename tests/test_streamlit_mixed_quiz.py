@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
+from app.grading_schemas import OpenAnswerGrade, OpenGradingResult
 from app.quiz_scoring import score_quiz
 from app.schemas import MultipleChoiceQuestion, OpenQuestion, Quiz
 
@@ -46,6 +47,18 @@ class MixedQuizStreamlitTests(unittest.TestCase):
         pdf = patch("app.gemini_service.generate_mixed_quiz_from_pdf", return_value=example_mixed_quiz())
         self.mixed_pdf = pdf.start()
         self.addCleanup(pdf.stop)
+        # Fixed UI test responses, not an assessment of answer correctness.
+        grading = patch("app.grading_service.grade_open_answers", side_effect=lambda questions, answers: (
+            OpenGradingResult(grades=[
+                OpenAnswerGrade(
+                    question_id=question.id,
+                    points=1.0 if answers.get(question.id, "").strip() else 0.0,
+                    feedback=f"MOCK_FEEDBACK_{question.id}",
+                ) for question in questions
+            ])
+        ))
+        self.grading = grading.start()
+        self.addCleanup(grading.stop)
         self.single_generators = []
         for name in ("generate_quiz", "generate_quiz_from_pdf", "generate_open_quiz", "generate_open_quiz_from_pdf"):
             generator = patch(
@@ -165,7 +178,7 @@ class MixedQuizStreamlitTests(unittest.TestCase):
         self.assertEqual(len(self.app.success), 0)
         self.assertEqual(len(self.app.metric), 0)
 
-    def test_reruns_preserve_answers_and_only_closed_questions_are_scored(self):
+    def test_reruns_preserve_answers_and_closed_questions_keep_local_scoring(self):
         self.start_text_quiz()
         self.app.text_area(key="mixed_quiz_answer_open_10").input("Moja otwarta odpowiedź").run()
         self.app.radio(key="mixed_quiz_answer_closed_20").set_value(0).run()
@@ -178,6 +191,7 @@ class MixedQuizStreamlitTests(unittest.TestCase):
         })
         self.mixed_text.assert_called_once_with("Materiał źródłowy", 3, 2)
         self.scoring.assert_not_called()
+        self.grading.assert_not_called()
         self.app.button[0].click().run()
         self.assertFalse(self.app.exception)
         self.assertEqual(self.app.session_state["stage"], "results")
@@ -186,18 +200,23 @@ class MixedQuizStreamlitTests(unittest.TestCase):
         self.assertEqual([question.id for question in scored_quiz.questions], [20, 40, 50])
         self.assertTrue(all(question.type == "closed" for question in scored_quiz.questions))
         self.assertEqual(scored_answers, {20: 0, 40: 0, 50: None})
-        self.assertEqual(self.app.session_state["results"], {"closed": {
+        self.assertEqual(self.app.session_state["results"]["closed"], {
             "points": 1, "total": 3, "percentage": 33.33, "unanswered": 1,
-        }})
-        self.assertEqual(len(self.app.metric), 1)
+        })
+        self.assertEqual(self.app.session_state["results"]["summary"], {
+            "points": 2.0, "max_points": 5, "percentage": 40.0,
+        })
+        self.assertEqual(len(self.app.metric), 4)
         self.assertEqual(self.app.metric[0].label, "Wynik części zamkniętej")
         self.assertEqual(self.app.metric[0].value, "1 / 3")
         self.assertNotIn("%", self.app.metric[0].value)
+        self.assertEqual([metric.value for metric in self.app.metric][1:], ["1 / 2", "2 / 5", "40%"])
         rendered = self.rendered_text()
         self.assertIn("Moja otwarta odpowiedź", rendered)
         self.assertIn("REFERENCE_ONLY_10", rendered)
         self.assertIn("REFERENCE_ONLY_30", rendered)
-        self.assertIn("nie są jeszcze automatycznie oceniane", rendered)
+        self.assertIn("oceniane z pomocą AI", rendered)
+        self.assertIn("MOCK_FEEDBACK_10", rendered)
         headings = [item.value for item in self.app.markdown if item.value.startswith("**")]
         self.assertEqual(headings, [
             f"**{position}. {question.question}**"
@@ -207,6 +226,10 @@ class MixedQuizStreamlitTests(unittest.TestCase):
         self.mixed_text.assert_called_once()
         self.mixed_pdf.assert_not_called()
         self.scoring.assert_called_once()
+        self.grading.assert_called_once()
+        graded_questions, graded_answers = self.grading.call_args.args
+        self.assertEqual([question.id for question in graded_questions], [10, 30])
+        self.assertEqual(graded_answers, {10: "Moja otwarta odpowiedź", 30: ""})
 
     def test_all_questions_may_be_unanswered(self):
         self.start_text_quiz()
@@ -216,6 +239,7 @@ class MixedQuizStreamlitTests(unittest.TestCase):
             "points": 0, "total": 3, "percentage": 0.0, "unanswered": 3,
         })
         self.assertEqual(self.app.metric[0].value, "0 / 3")
+        self.assertEqual([metric.value for metric in self.app.metric][1:], ["0 / 2", "0 / 5", "0%"])
         self.assertIn("Nie udzielono odpowiedzi.", self.rendered_text())
         self.assertIn("REFERENCE_ONLY_30", self.rendered_text())
         self.mixed_text.assert_called_once()

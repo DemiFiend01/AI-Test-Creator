@@ -9,9 +9,11 @@ from app.gemini_service import (
     generate_quiz,
     generate_quiz_from_pdf,
 )
+from app.grading_schemas import OpenGradingResult
+from app.grading_service import grade_open_answers
 from app.mock_quiz import create_mock_quiz
 from app.quiz_scoring import score_quiz
-from app.schemas import ClosedQuiz
+from app.schemas import ClosedQuiz, OpenQuestion
 
 
 def _clear_answer_widgets():
@@ -260,28 +262,21 @@ def show_open_quiz():
             height=140,
             key=f"open_quiz_answer_{question.id}",
         )
-    # Keep answers on every widget rerun; no grading or Gemini calls here.
+    # Keep answers on every widget rerun; grade only after explicit submission.
     st.session_state.answers = answers
-    if st.button("Zakończ quiz i zobacz odpowiedzi wzorcowe", type="primary"):
-        st.session_state.results = None
-        st.session_state.stage = "results"
-        st.rerun()
+    if st.button("Zakończ quiz i oceń odpowiedzi", type="primary"):
+        _submit_for_open_grading()
 
 
 def show_open_results():
     quiz = st.session_state.quiz
-    st.subheader("3. Twoje odpowiedzi i odpowiedzi wzorcowe")
-    st.info(
-        "Automatyczne ocenianie pytań otwartych nie jest jeszcze dostępne. "
-        "Na tym etapie pytania otwarte nie są punktowane."
-    )
+    st.subheader("3. Wyniki quizu otwartego")
+    _show_ai_grading_summary()
+    grades = _open_grades_by_id()
     for position, question in enumerate(quiz.questions, start=1):
         st.divider()
         st.markdown(f"**{position}. {question.question}**")
-        answer = st.session_state.answers.get(question.id, "")
-        st.write("Twoja odpowiedź:", answer if answer.strip() else "Nie udzielono odpowiedzi.")
-        st.write("Odpowiedź wzorcowa:", question.reference_answer)
-        st.write("Wyjaśnienie:", question.explanation)
+        _show_open_answer_result(question, grades.get(question.id))
     st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="primary")
 
 
@@ -291,7 +286,7 @@ def show_mixed_quiz():
     st.write(quiz.title)
     st.caption(
         "Możesz pozostawić pytania bez odpowiedzi. "
-        "Odpowiedzi otwarte nie są oceniane automatycznie."
+        "Po oddaniu quizu odpowiedzi otwarte zostaną ocenione z pomocą AI."
     )
     answers = {}
     for position, question in enumerate(quiz.questions, start=1):
@@ -308,23 +303,14 @@ def show_mixed_quiz():
             answers[question.id] = st.text_area(label, height=140, key=key)
     st.session_state.answers = answers
     if st.button("Zakończ quiz i sprawdź odpowiedzi", type="primary"):
-        closed_questions = [question for question in quiz.questions if question.type == "closed"]
-        closed_quiz = ClosedQuiz(title=quiz.title, questions=closed_questions)
-        closed_answers = {question.id: answers[question.id] for question in closed_questions}
-        st.session_state.results = {"closed": score_quiz(closed_quiz, closed_answers)}
-        st.session_state.stage = "results"
-        st.rerun()
+        _submit_for_open_grading()
 
 
 def show_mixed_results():
     quiz = st.session_state.quiz
-    closed_result = st.session_state.results["closed"]
-    st.subheader("3. Odpowiedzi i wynik części zamkniętej")
-    st.metric("Wynik części zamkniętej", f"{closed_result['points']} / {closed_result['total']}")
-    st.info(
-        "Pytania otwarte nie są jeszcze automatycznie oceniane "
-        "ani uwzględniane w wyniku części zamkniętej."
-    )
+    st.subheader("3. Wyniki quizu mieszanego")
+    _show_ai_grading_summary()
+    grades = _open_grades_by_id()
     for position, question in enumerate(quiz.questions, start=1):
         st.divider()
         st.markdown(f"**{position}. {question.question}**")
@@ -338,12 +324,118 @@ def show_mixed_results():
                     st.success("Poprawna odpowiedź — 1 punkt.")
                 else:
                     st.error("Niepoprawna odpowiedź — 0 punktów.")
+            points = 1 if answer == question.correct_answer else 0
+            st.write("Punkty:", f"{points} / 1 pkt")
             st.write("Poprawna odpowiedź:", question.options[question.correct_answer])
+            st.write("Wyjaśnienie:", question.explanation)
         else:
-            st.write("Twoja odpowiedź:", answer if answer and answer.strip() else "Nie udzielono odpowiedzi.")
-            st.write("Odpowiedź wzorcowa:", question.reference_answer)
-        st.write("Wyjaśnienie:", question.explanation)
+            _show_open_answer_result(question, grades.get(question.id))
     st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="primary")
+
+
+def _format_points(value):
+    return f"{value:g}".replace(".", ",")
+
+
+def _format_percentage(value):
+    return f"{value:.1f}".rstrip("0").rstrip(".").replace(".", ",") + "%"
+
+
+def _submit_for_open_grading():
+    quiz = st.session_state.quiz
+    results = {"open_grades": None, "grading_error": None, "summary": None}
+    closed_questions = [question for question in quiz.questions if question.type == "closed"]
+    if closed_questions:
+        closed_quiz = ClosedQuiz(title=quiz.title, questions=closed_questions)
+        closed_answers = {
+            question.id: st.session_state.answers.get(question.id) for question in closed_questions
+        }
+        results["closed"] = score_quiz(closed_quiz, closed_answers)
+    st.session_state.results = results
+    st.session_state.stage = "results"
+    _grade_submitted_open_answers()
+    st.rerun()
+
+
+def _grade_submitted_open_answers():
+    results = st.session_state.results
+    if results["open_grades"] is not None:
+        return
+    quiz = st.session_state.quiz
+    questions = [question for question in quiz.questions if isinstance(question, OpenQuestion)]
+    answers = {question.id: st.session_state.answers.get(question.id, "") for question in questions}
+    try:
+        with st.spinner("AI ocenia odpowiedzi otwarte…"):
+            open_grades = grade_open_answers(questions, answers)
+        if (
+            not isinstance(open_grades, OpenGradingResult)
+            or len(open_grades.grades) != len(questions)
+            or {grade.question_id for grade in open_grades.grades} != {question.id for question in questions}
+        ):
+            raise ValueError("Incomplete grading result.")
+        closed_points = results.get("closed", {}).get("points", 0)
+        total_points = closed_points + sum(grade.points for grade in open_grades.grades)
+        summary = {
+            "points": total_points,
+            "max_points": len(quiz.questions),
+            "percentage": total_points / len(quiz.questions) * 100,
+        }
+    except Exception:
+        results["open_grades"] = None
+        results["summary"] = None
+        results["grading_error"] = (
+            "Ocenianie odpowiedzi otwartych jest chwilowo niedostępne. "
+            "Twoje odpowiedzi zostały zachowane. Spróbuj ponownie."
+        )
+    else:
+        results["open_grades"] = open_grades
+        results["summary"] = summary
+        results["grading_error"] = None
+    st.session_state.results = results
+
+
+def _show_ai_grading_summary():
+    results = st.session_state.results
+    st.info("Odpowiedzi otwarte są oceniane z pomocą AI. Takie oceny mogą czasem być niedokładne.")
+    if "closed" in results:
+        closed = results["closed"]
+        closed_column, open_column = st.columns(2)
+        closed_column.metric("Wynik części zamkniętej", f"{closed['points']} / {closed['total']}")
+        if results["open_grades"] is not None:
+            open_points = sum(grade.points for grade in results["open_grades"].grades)
+            open_column.metric(
+                "Wynik części otwartej",
+                f"{_format_points(open_points)} / {len(results['open_grades'].grades)}",
+            )
+        else:
+            open_column.caption("Część otwarta oczekuje na ocenienie.")
+    if results["open_grades"] is not None and results["summary"] is not None:
+        summary = results["summary"]
+        total, percentage = st.columns(2)
+        total.metric("Łączny wynik", f"{_format_points(summary['points'])} / {summary['max_points']}")
+        percentage.metric("Wynik procentowy", _format_percentage(summary["percentage"]))
+    else:
+        st.error(results["grading_error"] or "Ocenianie odpowiedzi otwartych jest chwilowo niedostępne.")
+        if st.button("Ponów ocenianie", key="retry_open_grading", type="primary"):
+            _grade_submitted_open_answers()
+            st.rerun()
+
+
+def _open_grades_by_id():
+    result = st.session_state.results["open_grades"]
+    return {grade.question_id: grade for grade in result.grades} if result is not None else {}
+
+
+def _show_open_answer_result(question, grade):
+    answer = st.session_state.answers.get(question.id, "")
+    st.write("Twoja odpowiedź:", answer if answer.strip() else "Nie udzielono odpowiedzi.")
+    if grade is not None:
+        st.write("Punkty (AI):", f"{_format_points(grade.points)} / 1 pkt")
+        st.write("Informacja zwrotna:", grade.feedback)
+    else:
+        st.write("Ocena:", "Oczekuje na ocenienie.")
+    st.write("Odpowiedź wzorcowa:", question.reference_answer)
+    st.write("Wyjaśnienie:", question.explanation)
 
 
 def main():
