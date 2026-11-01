@@ -1,6 +1,6 @@
 import streamlit as st
 
-from app.gemini_service import generate_quiz
+from app.gemini_service import MAX_PDF_BYTES, generate_quiz, generate_quiz_from_pdf
 from app.mock_quiz import create_mock_quiz
 from app.quiz_scoring import score_quiz
 
@@ -17,23 +17,50 @@ def reset_quiz():
 
 def show_setup():
     st.subheader("1. Przygotuj quiz")
-    with st.form("setup_form"):
-        modes = ("Gemini AI", "Demo")
-        mode = st.radio(
-            "Tryb quizu",
-            options=modes,
-            index=modes.index(st.session_state.get("generation_mode", "Gemini AI")),
-            key="setup_mode",
+    modes = ("Gemini AI", "Demo")
+    mode = st.radio(
+        "Tryb quizu",
+        options=modes,
+        index=modes.index(st.session_state.get("generation_mode", "Gemini AI")),
+        key="setup_mode",
+        horizontal=True,
+    )
+    material_source = "Wklej tekst"
+    if mode == "Gemini AI":
+        sources = ("Wklej tekst", "Prześlij PDF")
+        material_source = st.radio(
+            "Źródło materiału",
+            options=sources,
+            index=sources.index(st.session_state.get("material_source", "Wklej tekst")),
+            key="setup_material_source",
             horizontal=True,
         )
-        source_text = st.text_area(
-            "Materiał do nauki",
-            value=st.session_state.get("source_text", ""),
-            height=220,
-            placeholder="Wklej notatki lub fragment materiału edukacyjnego…",
-            help="Gemini AI wymaga materiału źródłowego. W trybie Demo tekst jest opcjonalny.",
-            key="setup_source_text",
+
+    source_text = st.session_state.get("source_text", "")
+    uploaded_pdf = None
+    if mode == "Gemini AI" and material_source == "Prześlij PDF":
+        # Uploads rerun immediately so file details appear before generation.
+        uploaded_pdf = st.file_uploader(
+            "Dokument PDF (maksymalnie 10 MB)",
+            type=["pdf"],
+            accept_multiple_files=False,
+            max_upload_size=10,
+            key="setup_pdf",
         )
+        if uploaded_pdf is not None:
+            st.markdown(f"**Plik:** {uploaded_pdf.name}")
+            st.caption(f"Rozmiar: {uploaded_pdf.size / (1024 * 1024):.2f} MB / 10 MB")
+
+    with st.form("setup_form"):
+        if mode != "Gemini AI" or material_source != "Prześlij PDF":
+            source_text = st.text_area(
+                "Materiał do nauki",
+                value=source_text,
+                height=220,
+                placeholder="Wklej notatki lub fragment materiału edukacyjnego…",
+                help="Gemini AI wymaga materiału źródłowego. W trybie Demo tekst jest opcjonalny.",
+                key="setup_source_text",
+            )
         num_questions = st.selectbox(
             "Liczba pytań",
             options=range(1, 11),
@@ -45,14 +72,35 @@ def show_setup():
     if submitted:
         st.session_state.source_text = source_text
         st.session_state.generation_mode = mode
+        st.session_state.material_source = material_source
         st.session_state.num_questions = num_questions
         if mode == "Gemini AI":
-            if not source_text.strip():
+            if material_source == "Prześlij PDF":
+                if uploaded_pdf is None:
+                    st.error("Wybierz dokument PDF przed rozpoczęciem quizu.")
+                    return
+                if uploaded_pdf.size > MAX_PDF_BYTES:
+                    st.error("Plik PDF nie może przekraczać 10 MB.")
+                    return
+                pdf_bytes = uploaded_pdf.getvalue()
+                if len(pdf_bytes) > MAX_PDF_BYTES:
+                    st.error("Plik PDF nie może przekraczać 10 MB.")
+                    return
+                if (
+                    not uploaded_pdf.name.lower().endswith(".pdf")
+                    or not pdf_bytes.startswith(b"%PDF-")
+                ):
+                    st.error("Plik jest pusty lub nie ma prawidłowego nagłówka PDF.")
+                    return
+            elif not source_text.strip():
                 st.error("W trybie Gemini AI wprowadź niepusty materiał źródłowy.")
                 return
             try:
                 with st.spinner("Gemini AI przygotowuje pytania…"):
-                    quiz = generate_quiz(source_text.strip(), num_questions)
+                    if material_source == "Prześlij PDF":
+                        quiz = generate_quiz_from_pdf(pdf_bytes, num_questions)
+                    else:
+                        quiz = generate_quiz(source_text.strip(), num_questions)
             except Exception:
                 st.error(
                     "Nie udało się wygenerować quizu. Spróbuj ponownie lub wybierz Demo. "
