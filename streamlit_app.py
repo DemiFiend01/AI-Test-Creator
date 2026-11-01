@@ -9,7 +9,6 @@ from app.gemini_service import (
 )
 from app.mock_quiz import create_mock_quiz
 from app.quiz_scoring import score_quiz
-from app.schemas import OpenQuiz
 
 
 def _clear_answer_widgets():
@@ -146,8 +145,12 @@ def show_setup():
 
 def show_quiz():
     quiz = st.session_state.quiz
-    if isinstance(quiz, OpenQuiz):
+    question_types = {question.type for question in quiz.questions}
+    if question_types == {"open"}:
         show_open_quiz()
+        return
+    if question_types != {"closed"}:
+        st.error("Quizy mieszane nie są jeszcze obsługiwane w interfejsie.")
         return
     st.subheader("2. Rozwiąż quiz")
     st.write(quiz.title)
@@ -176,8 +179,12 @@ def show_quiz():
 
 def show_results():
     quiz = st.session_state.quiz
-    if isinstance(quiz, OpenQuiz):
+    question_types = {question.type for question in quiz.questions}
+    if question_types == {"open"}:
         show_open_results()
+        return
+    if question_types != {"closed"}:
+        st.error("Quizy mieszane nie są jeszcze obsługiwane w interfejsie.")
         return
     results = st.session_state.results
     st.subheader("3. Twoje wyniki")
@@ -228,7 +235,7 @@ def show_open_results():
     quiz = st.session_state.quiz
     st.subheader("3. Twoje odpowiedzi i odpowiedzi wzorcowe")
     st.info(
-        "Automatyczne ocenianie zostanie dodane w etapie 6B. "
+        "Automatyczne ocenianie pytań otwartych nie jest jeszcze dostępne. "
         "Na tym etapie pytania otwarte nie są punktowane."
     )
     for position, question in enumerate(quiz.questions, start=1):

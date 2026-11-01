@@ -18,7 +18,7 @@ def question_data(**overrides):
 class OpenQuestionTests(unittest.TestCase):
     def test_valid_question(self):
         question = OpenQuestion.model_validate(question_data())
-        self.assertEqual(question.model_dump(), question_data())
+        self.assertEqual(question.model_dump(), {**question_data(), "type": "open"})
         self.assertNotIn("options", question.model_dump())
         self.assertNotIn("correct_answer", question.model_dump())
 
@@ -26,7 +26,7 @@ class OpenQuestionTests(unittest.TestCase):
         data = question_data()
         for field in ("question", "reference_answer", "explanation"):
             data[field] = f" \t{data[field]}\n"
-        self.assertEqual(OpenQuestion.model_validate(data).model_dump(), question_data())
+        self.assertEqual(OpenQuestion.model_validate(data).model_dump(), {**question_data(), "type": "open"})
 
     def test_rejects_empty_or_whitespace_only_text(self):
         for field in ("question", "reference_answer", "explanation"):

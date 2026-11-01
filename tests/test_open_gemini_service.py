@@ -52,7 +52,10 @@ class OpenQuizGenerationTests(unittest.TestCase):
         quiz = gemini_service.generate_open_quiz("  Source material  ", 2)
         self.assertIsInstance(quiz, OpenQuiz)
         self.assertIsInstance(quiz.questions[0], OpenQuestion)
-        self.assertEqual(quiz.model_dump(), open_quiz_data())
+        expected = open_quiz_data()
+        for question in expected["questions"]:
+            question["type"] = "open"
+        self.assertEqual(quiz.model_dump(), expected)
         self.generate.assert_called_once()
         self.client_factory.assert_called_once_with(api_key="dummy-test-key")
         self.load_dotenv.assert_called_once_with()
@@ -182,7 +185,7 @@ class OpenQuizGenerationTests(unittest.TestCase):
                 self.assertIsInstance(generator(source, 2), Quiz)
                 config = self.generate.call_args.kwargs["config"]
                 self.assertIn("multiple-choice quiz", config["system_instruction"])
-                self.assertIn("Question", config["response_json_schema"]["$defs"])
+                self.assertIn("MultipleChoiceQuestion", config["response_json_schema"]["$defs"])
 
 
 if __name__ == "__main__":

@@ -124,7 +124,7 @@ class OpenQuizStreamlitTests(unittest.TestCase):
         for question in self.open_text.return_value.questions:
             self.assertIn(question.reference_answer, rendered)
             self.assertIn(question.explanation, rendered)
-        self.assertIn("6B", rendered)
+        self.assertIn("Automatyczne ocenianie pytań otwartych nie jest jeszcze dostępne", rendered)
         self.assertEqual(len(self.app.metric), 0)
         self.assertIsNone(self.app.session_state["results"])
         self.scoring.assert_not_called()
@@ -228,6 +228,45 @@ class OpenQuizStreamlitTests(unittest.TestCase):
         self.assertEqual(self.open_text.call_count, 2)
         self.closed_text.assert_called_once()
         self.scoring.assert_called_once()
+
+    def test_unified_quiz_with_only_open_questions_uses_open_workflow(self):
+        quiz = Quiz.model_validate(self.open_text.return_value.model_dump())
+        self.assertIs(type(quiz), Quiz)
+        self.app.session_state["quiz"] = quiz
+        self.app.session_state["stage"] = "quiz"
+        self.app.run()
+        self.assertFalse(self.app.exception)
+        self.assertEqual(len(self.app.text_area), 2)
+        self.assertEqual(len(self.app.radio), 0)
+        self.assertNotIn("REFERENCE_ONLY_1", self.rendered_text())
+        self.app.text_area(key="open_quiz_answer_1").input("Moja odpowiedź").run()
+        self.app.button[0].click().run()
+        self.assertFalse(self.app.exception)
+        self.assertIn("REFERENCE_ONLY_1", self.rendered_text())
+        self.assertEqual(len(self.app.metric), 0)
+        self.open_text.assert_not_called()
+        self.open_pdf.assert_not_called()
+        self.scoring.assert_not_called()
+
+    def test_mixed_data_is_not_answered_or_scored_by_current_ui(self):
+        quiz = Quiz(title="Quiz", questions=[
+            create_mock_quiz(1).questions[0],
+            self.open_text.return_value.questions[1],
+        ])
+        self.app.session_state["quiz"] = quiz
+        for stage in ("quiz", "results"):
+            with self.subTest(stage=stage):
+                self.app.session_state["stage"] = stage
+                self.app.run()
+                self.assertFalse(self.app.exception)
+                self.assertIn("Quizy mieszane nie są jeszcze obsługiwane", self.app.error[0].value)
+                self.assertEqual(len(self.app.radio), 0)
+                self.assertEqual(len(self.app.text_area), 0)
+                self.assertEqual(len(self.app.metric), 0)
+                self.assertNotIn("REFERENCE_ONLY_2", self.rendered_text())
+        self.open_text.assert_not_called()
+        self.open_pdf.assert_not_called()
+        self.scoring.assert_not_called()
 
 
 if __name__ == "__main__":

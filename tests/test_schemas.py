@@ -19,7 +19,7 @@ def question_data(**overrides):
 class QuestionTests(unittest.TestCase):
     def test_valid_question(self):
         question = Question.model_validate(question_data())
-        self.assertEqual(question.model_dump(), question_data())
+        self.assertEqual(question.model_dump(), {**question_data(), "type": "closed"})
 
     def test_strips_whitespace_from_all_text(self):
         question = Question.model_validate(question_data(
@@ -27,7 +27,7 @@ class QuestionTests(unittest.TestCase):
             options=[" 3 ", "\t4\n", " 5", "6 "],
             explanation="\nAdding 2 and 2 gives 4.\t ",
         ))
-        self.assertEqual(question.model_dump(), question_data())
+        self.assertEqual(question.model_dump(), {**question_data(), "type": "closed"})
 
     def test_rejects_empty_question_and_explanation(self):
         for field in ("question", "explanation"):

@@ -47,7 +47,9 @@ class GenerateQuizTests(unittest.TestCase):
         quiz = gemini_service.generate_quiz(" Earth orbits the Sun. ", 1)
         self.assertIsInstance(quiz, Quiz)
         self.assertIsInstance(quiz.questions[0], Question)
-        self.assertEqual(quiz.model_dump(), quiz_data())
+        expected = quiz_data()
+        expected["questions"][0]["type"] = "closed"
+        self.assertEqual(quiz.model_dump(), expected)
         self.load_dotenv.assert_called_once_with()
         self.client_factory.assert_called_once_with(api_key="dummy-test-key")
         self.generate.assert_called_once()
@@ -57,7 +59,7 @@ class GenerateQuizTests(unittest.TestCase):
         config = request["config"]
         self.assertEqual(config["response_mime_type"], "application/json")
         schema = config["response_json_schema"]
-        self.assertEqual(schema["$defs"]["Question"], Question.model_json_schema())
+        self.assertEqual(schema["$defs"]["MultipleChoiceQuestion"], Question.model_json_schema())
         self.assertEqual(schema["properties"]["questions"]["minItems"], 1)
         self.assertEqual(schema["properties"]["questions"]["maxItems"], 1)
         self.assertIn("based only on the provided source text", config["system_instruction"])

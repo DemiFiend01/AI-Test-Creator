@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from app.schemas import OpenQuiz, Quiz
+from app.schemas import ClosedQuiz, OpenQuiz, Quiz
 
 
 MAX_PDF_BYTES = 10 * 1024 * 1024
@@ -67,7 +67,7 @@ def _request_quiz(
     num_questions: int,
     source: str = "source text",
     *,
-    quiz_model: type[Quiz] | type[OpenQuiz] = Quiz,
+    quiz_model: type[ClosedQuiz] | type[OpenQuiz] = ClosedQuiz,
 ) -> Quiz | OpenQuiz:
     load_dotenv()
     api_key = os.getenv("API_KEY", "").strip()
@@ -100,6 +100,8 @@ def _request_quiz(
         f"non-empty explanation supported by the {source}. "
         f"Use the same language as the {source}."
     )
+    question_type = "open" if quiz_model is OpenQuiz else "closed"
+    instructions += f' Set each question\'s type to "{question_type}".'
     if source == "PDF document":
         instructions += " Consider the document's text, tables, charts and diagrams."
     config = {
