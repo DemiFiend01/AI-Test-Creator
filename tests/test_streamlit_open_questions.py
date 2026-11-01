@@ -248,25 +248,28 @@ class OpenQuizStreamlitTests(unittest.TestCase):
         self.open_pdf.assert_not_called()
         self.scoring.assert_not_called()
 
-    def test_mixed_data_is_not_answered_or_scored_by_current_ui(self):
+    def test_unified_mixed_data_uses_both_widgets_and_only_closed_scoring(self):
         quiz = Quiz(title="Quiz", questions=[
             create_mock_quiz(1).questions[0],
             self.open_text.return_value.questions[1],
         ])
         self.app.session_state["quiz"] = quiz
-        for stage in ("quiz", "results"):
-            with self.subTest(stage=stage):
-                self.app.session_state["stage"] = stage
-                self.app.run()
-                self.assertFalse(self.app.exception)
-                self.assertIn("Quizy mieszane nie są jeszcze obsługiwane", self.app.error[0].value)
-                self.assertEqual(len(self.app.radio), 0)
-                self.assertEqual(len(self.app.text_area), 0)
-                self.assertEqual(len(self.app.metric), 0)
-                self.assertNotIn("REFERENCE_ONLY_2", self.rendered_text())
+        self.app.session_state["stage"] = "quiz"
+        self.app.run()
+        self.assertFalse(self.app.exception)
+        self.assertEqual(len(self.app.radio), 1)
+        self.assertEqual(len(self.app.text_area), 1)
+        self.assertEqual(len(self.app.metric), 0)
+        self.assertNotIn("REFERENCE_ONLY_2", self.rendered_text())
+        self.app.button[0].click().run()
+        self.assertFalse(self.app.exception)
+        self.assertEqual(self.app.session_state["results"]["closed"]["total"], 1)
+        self.assertEqual(len(self.app.metric), 1)
+        self.assertEqual(self.app.metric[0].label, "Wynik części zamkniętej")
+        self.assertIn("REFERENCE_ONLY_2", self.rendered_text())
         self.open_text.assert_not_called()
         self.open_pdf.assert_not_called()
-        self.scoring.assert_not_called()
+        self.scoring.assert_called_once()
 
 
 if __name__ == "__main__":
