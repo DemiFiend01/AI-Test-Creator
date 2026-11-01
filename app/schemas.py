@@ -26,3 +26,22 @@ class Quiz(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("Question IDs must be unique within a quiz.")
         return self
+
+
+class OpenQuestion(BaseModel):
+    id: int = Field(ge=1)
+    question: NonEmptyText
+    reference_answer: NonEmptyText
+    explanation: NonEmptyText
+
+
+class OpenQuiz(BaseModel):
+    title: NonEmptyText
+    questions: list[OpenQuestion] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_question_ids(self) -> Self:
+        ids = [question.id for question in self.questions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Question IDs must be unique within a quiz.")
+        return self

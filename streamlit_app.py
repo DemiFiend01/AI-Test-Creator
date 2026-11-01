@@ -1,14 +1,25 @@
 import streamlit as st
 
-from app.gemini_service import MAX_PDF_BYTES, generate_quiz, generate_quiz_from_pdf
+from app.gemini_service import (
+    MAX_PDF_BYTES,
+    generate_open_quiz,
+    generate_open_quiz_from_pdf,
+    generate_quiz,
+    generate_quiz_from_pdf,
+)
 from app.mock_quiz import create_mock_quiz
 from app.quiz_scoring import score_quiz
+from app.schemas import OpenQuiz
+
+
+def _clear_answer_widgets():
+    for key in list(st.session_state):
+        if key.startswith(("quiz_answer_", "open_quiz_answer_")):
+            del st.session_state[key]
 
 
 def reset_quiz():
-    for key in list(st.session_state):
-        if key.startswith("quiz_answer_"):
-            del st.session_state[key]
+    _clear_answer_widgets()
     st.session_state.stage = "setup"
     st.session_state.quiz = None
     st.session_state.answers = {}
@@ -26,7 +37,16 @@ def show_setup():
         horizontal=True,
     )
     material_source = "Wklej tekst"
+    question_type = "Zamknięte"
     if mode == "Gemini AI":
+        question_types = ("Zamknięte", "Otwarte")
+        question_type = st.radio(
+            "Rodzaj pytań",
+            options=question_types,
+            index=question_types.index(st.session_state.get("question_type", "Zamknięte")),
+            key="setup_question_type",
+            horizontal=True,
+        )
         sources = ("Wklej tekst", "Prześlij PDF")
         material_source = st.radio(
             "Źródło materiału",
@@ -72,6 +92,7 @@ def show_setup():
     if submitted:
         st.session_state.source_text = source_text
         st.session_state.generation_mode = mode
+        st.session_state.question_type = question_type
         st.session_state.material_source = material_source
         st.session_state.num_questions = num_questions
         if mode == "Gemini AI":
@@ -97,7 +118,12 @@ def show_setup():
                 return
             try:
                 with st.spinner("Gemini AI przygotowuje pytania…"):
-                    if material_source == "Prześlij PDF":
+                    if question_type == "Otwarte":
+                        if material_source == "Prześlij PDF":
+                            quiz = generate_open_quiz_from_pdf(pdf_bytes, num_questions)
+                        else:
+                            quiz = generate_open_quiz(source_text.strip(), num_questions)
+                    elif material_source == "Prześlij PDF":
                         quiz = generate_quiz_from_pdf(pdf_bytes, num_questions)
                     else:
                         quiz = generate_quiz(source_text.strip(), num_questions)
@@ -110,6 +136,7 @@ def show_setup():
         else:
             quiz = create_mock_quiz(num_questions)
 
+        _clear_answer_widgets()
         st.session_state.quiz = quiz
         st.session_state.answers = {}
         st.session_state.results = None
@@ -119,6 +146,9 @@ def show_setup():
 
 def show_quiz():
     quiz = st.session_state.quiz
+    if isinstance(quiz, OpenQuiz):
+        show_open_quiz()
+        return
     st.subheader("2. Rozwiąż quiz")
     st.write(quiz.title)
     st.caption("Wybierz jedną odpowiedź na każde pytanie. Brak odpowiedzi oznacza 0 punktów.")
@@ -146,6 +176,9 @@ def show_quiz():
 
 def show_results():
     quiz = st.session_state.quiz
+    if isinstance(quiz, OpenQuiz):
+        show_open_results()
+        return
     results = st.session_state.results
     st.subheader("3. Twoje wyniki")
     points, percentage, unanswered = st.columns(3)
@@ -168,6 +201,43 @@ def show_results():
         st.write("Poprawna odpowiedź:", question.options[question.correct_answer])
         st.write("Wyjaśnienie:", question.explanation)
 
+    st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="primary")
+
+
+def show_open_quiz():
+    quiz = st.session_state.quiz
+    st.subheader("2. Odpowiedz na pytania otwarte")
+    st.write(quiz.title)
+    st.caption("Odpowiedz własnymi słowami. Możesz pozostawić pytania bez odpowiedzi.")
+    answers = {}
+    for position, question in enumerate(quiz.questions, start=1):
+        answers[question.id] = st.text_area(
+            f"{position}. {question.question}",
+            height=140,
+            key=f"open_quiz_answer_{question.id}",
+        )
+    # Keep answers on every widget rerun; no grading or Gemini calls here.
+    st.session_state.answers = answers
+    if st.button("Zakończ quiz i zobacz odpowiedzi wzorcowe", type="primary"):
+        st.session_state.results = None
+        st.session_state.stage = "results"
+        st.rerun()
+
+
+def show_open_results():
+    quiz = st.session_state.quiz
+    st.subheader("3. Twoje odpowiedzi i odpowiedzi wzorcowe")
+    st.info(
+        "Automatyczne ocenianie zostanie dodane w etapie 6B. "
+        "Na tym etapie pytania otwarte nie są punktowane."
+    )
+    for position, question in enumerate(quiz.questions, start=1):
+        st.divider()
+        st.markdown(f"**{position}. {question.question}**")
+        answer = st.session_state.answers.get(question.id, "")
+        st.write("Twoja odpowiedź:", answer if answer.strip() else "Nie udzielono odpowiedzi.")
+        st.write("Odpowiedź wzorcowa:", question.reference_answer)
+        st.write("Wyjaśnienie:", question.explanation)
     st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="primary")
 
 
