@@ -10,7 +10,7 @@ from app.gemini_service import (
     generate_quiz_from_pdf,
 )
 from app.grading_schemas import OpenGradingResult
-from app.grading_service import grade_open_answers
+from app.grading_service import grade_open_answers, generate_summary
 from app.mock_quiz import create_mock_quiz
 from app.quiz_scoring import score_quiz
 from app.schemas import ClosedQuiz, OpenQuestion
@@ -29,6 +29,11 @@ def reset_quiz():
     st.session_state.answers = {}
     st.session_state.results = None
 
+def retry():
+    _clear_answer_widgets()
+    st.session_state.answers = {}
+    st.session_state.results = None
+    st.session_state.stage = "quiz"
 
 def _source_text_input(value):
     return st.text_area(
@@ -51,6 +56,24 @@ def show_setup():
         key="setup_mode",
         horizontal=True,
     )
+    difficulty_map = {
+        "Łatwy": "easy",
+        "Średni": "normal difficulty",
+        "Trudny": "difficult"
+    }
+    reverse_difficulty_map = {v: k for k, v in difficulty_map.items()}
+    
+    current_stored_diff = st.session_state.get("difficulty", "normal difficulty")
+    default_label = reverse_difficulty_map.get(current_stored_diff, "Średni")
+
+    selected_label = st.radio(
+        "Poziom trudności",
+        options=list(difficulty_map.keys()),
+        index=list(difficulty_map.keys()).index(default_label),
+        key="setup_difficulty_widget",
+        horizontal=True,
+    )
+    difficulty = difficulty_map[selected_label]
     material_source = "Wklej tekst"
     question_type = "Zamknięte"
     if mode == "Gemini AI":
@@ -117,6 +140,7 @@ def show_setup():
         submitted = st.form_submit_button("Rozpocznij quiz", type="primary")
 
     if submitted:
+        st.session_state.difficulty = difficulty
         st.session_state.source_text = source_text
         st.session_state.generation_mode = mode
         st.session_state.question_type = question_type
@@ -153,18 +177,18 @@ def show_setup():
                 with st.spinner("Gemini AI przygotowuje pytania…"):
                     if question_type == "Mieszane":
                         if material_source == "Prześlij PDF":
-                            quiz = generate_mixed_quiz_from_pdf(pdf_bytes, num_closed, num_open)
+                            quiz = generate_mixed_quiz_from_pdf(pdf_bytes, num_closed, num_open, difficulty=difficulty)
                         else:
-                            quiz = generate_mixed_quiz(source_text.strip(), num_closed, num_open)
+                            quiz = generate_mixed_quiz(source_text.strip(), num_closed, num_open, difficulty=difficulty)
                     elif question_type == "Otwarte":
                         if material_source == "Prześlij PDF":
-                            quiz = generate_open_quiz_from_pdf(pdf_bytes, num_questions)
+                            quiz = generate_open_quiz_from_pdf(pdf_bytes, num_questions, difficulty=difficulty)
                         else:
-                            quiz = generate_open_quiz(source_text.strip(), num_questions)
+                            quiz = generate_open_quiz(source_text.strip(), num_questions, difficulty=difficulty)
                     elif material_source == "Prześlij PDF":
-                        quiz = generate_quiz_from_pdf(pdf_bytes, num_questions)
+                        quiz = generate_quiz_from_pdf(pdf_bytes, num_questions, difficulty=difficulty)
                     else:
-                        quiz = generate_quiz(source_text.strip(), num_questions)
+                        quiz = generate_quiz(source_text.strip(), num_questions, difficulty=difficulty)
             except Exception:
                 st.error(
                     "Nie udało się wygenerować quizu. Spróbuj ponownie lub wybierz Demo. "
@@ -215,15 +239,86 @@ def show_quiz():
         st.session_state.stage = "results"
         st.rerun()
 
+def _show_result_summary():
+    results = st.session_state.results
+    quiz = st.session_state.quiz
+    # Podsumowanie całego quizu
+    st.divider()
+    st.subheader("4. Podsumowanie")
+
+    # Here call AI to go over all of the quiz.questions and generate a summary
+    if results.get("quiz_summary") is None:
+        with st.spinner("Generowanie podsumowania AI..."):
+            try:
+                summary_items = []
+                # for q in quiz.questions:
+                #     ans_idx = st.session_state.answers.get(q.id)
+                #     is_correct = (ans_idx == q.correct_answer)
+                #     summary_items.append({
+                #         "question": q.question,
+                #         "reference_answer": q.options[q.correct_answer],
+                #         "explanation": q.explanation,
+                #         "student_answer": q.options[ans_idx] if ans_idx is not None else "Brak odpowiedzi",
+                #         "points": 1.0 if is_correct else 0.0,
+                #         "feedback": q.explanation if is_correct else f"Błędna odpowiedź. Poprawna to: {q.options[q.correct_answer]}"
+                #     })
+                grades_dict = _open_grades_by_id() if "open_grades" in results and results["open_grades"] else {}
+                for q in quiz.questions:
+                    ans = st.session_state.answers.get(q.id)
+                    if hasattr(q, "correct_answer"):
+                        is_correct = (ans == q.correct_answer)
+                        summary_items.append({
+                            "question": q.question,
+                            "reference_answer": q.options[q.correct_answer],
+                            "explanation": q.explanation,
+                            "student_answer": q.options[ans] if ans is not None else "Brak odpowiedzi",
+                            "points": 1.0 if is_correct else 0.0,
+                            "feedback": q.explanation if is_correct else f"Błędna odpowiedź. Poprawna to: {q.options[q.correct_answer]}"
+                        })
+                    else:
+                        grade = grades_dict.get(q.id)
+                        ans_text = st.session_state.answers.get(q.id, "")
+                        summary_items.append({
+                            "question": q.question,
+                            "reference_answer": q.reference_answer,
+                            "explanation": q.explanation,
+                            "student_answer": ans_text if ans_text.strip() else "Brak odpowiedzi",
+                            "points": grade.points if grade else 0.0,
+                            "feedback": grade.feedback if grade else "Brak oceny"
+                        })
+                #print("Summary items:",summary_items)
+                results["quiz_summary"] = generate_summary(summary_items)
+                #print(results["quiz_summary"])
+            except Exception as e:
+                import traceback
+                st.error(f"CRITICAL ERROR: {e}")
+                st.code(traceback.format_exc())
+                results["quiz_summary"] = None
+
+    summary = results.get("quiz_summary")
+    if summary is not None:
+        st.write(summary.summary)
+        if summary.areas_of_focus:
+            st.markdown("**Obszary do poprawy:**")
+            for area in summary.areas_of_focus:
+                st.markdown(f"- {area}")
+        if summary.study_techniques:
+            st.markdown("**Proponowane metody nauki:**")
+            st.markdown(summary.study_techniques)
+    else:
+        st.error("Podsumowanie nie zostało wygenerowane, sprawdź połączenie...")
+
 
 def show_results():
     quiz = st.session_state.quiz
     question_types = {question.type for question in quiz.questions}
     if question_types == {"open"}:
         show_open_results()
+        #_show_result_summary()
         return
     if question_types == {"closed", "open"}:
         show_mixed_results()
+        #_show_result_summary()
         return
     results = st.session_state.results
     st.subheader("3. Twoje wyniki")
@@ -247,7 +342,12 @@ def show_results():
         st.write("Poprawna odpowiedź:", question.options[question.correct_answer])
         st.write("Wyjaśnienie:", question.explanation)
 
-    st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="primary")
+    _show_result_summary()
+    col1, col2 = st.columns(2)
+    with col1:
+        st.button("Powtórz test", on_click=retry, type="primary", use_container_width=True)
+    with col2:
+        st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="secondary", use_container_width=True)
 
 
 def show_open_quiz():
@@ -277,7 +377,12 @@ def show_open_results():
         st.divider()
         st.markdown(f"**{position}. {question.question}**")
         _show_open_answer_result(question, grades.get(question.id))
-    st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="primary")
+    _show_result_summary()
+    col1, col2 = st.columns(2)
+    with col1:
+        st.button("Powtórz test", on_click=retry, type="primary", use_container_width=True)
+    with col2:
+        st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="secondary", use_container_width=True)
 
 
 def show_mixed_quiz():
@@ -330,7 +435,12 @@ def show_mixed_results():
             st.write("Wyjaśnienie:", question.explanation)
         else:
             _show_open_answer_result(question, grades.get(question.id))
-    st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="primary")
+    _show_result_summary()
+    col1, col2 = st.columns(2)
+    with col1:
+        st.button("Powtórz test", on_click=retry, type="primary", use_container_width=True)
+    with col2:
+        st.button("Rozpocznij nowy quiz", on_click=reset_quiz, type="secondary", use_container_width=True)
 
 
 def _format_points(value):
@@ -346,7 +456,7 @@ def _submit_for_open_grading():
     results = {"open_grades": None, "grading_error": None, "summary": None}
     closed_questions = [question for question in quiz.questions if question.type == "closed"]
     if closed_questions:
-        closed_quiz = ClosedQuiz(title=quiz.title, questions=closed_questions)
+        closed_quiz = ClosedQuiz(title=quiz.title, questions=[q.model_dump() for q in closed_questions])
         closed_answers = {
             question.id: st.session_state.answers.get(question.id) for question in closed_questions
         }
@@ -454,7 +564,6 @@ def main():
         show_quiz()
     else:
         show_results()
-
 
 if __name__ == "__main__":
     main()

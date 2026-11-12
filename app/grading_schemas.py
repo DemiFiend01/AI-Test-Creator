@@ -32,3 +32,12 @@ class OpenGradingResult(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("Question IDs must be unique in grading results.")
         return self
+
+
+class QuizSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: NonEmptyText
+    areas_of_focus: list[NonEmptyText]
+    study_techniques: NonEmptyText
+
